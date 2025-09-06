@@ -193,59 +193,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 }
 
-// Example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// args is the RequestVoteArgs argument.
-// reply is passed by caller and filled by the receiving server.
-
-// The myrpc package simulates a lossy network, in which servers may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives within a timeout interval, Call() returns true;
-// Otherwise Call() returns false.
-// Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the handler function on the server side does not return.
-// Thus, there is no need to implement your own timeouts around Call().
-//
-// Look at the comments in ../myrpc/rpc.go for more details.
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-
-	if !ok {
-		return
-	}
-
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	// if server is no longer a candidate or term has already changed, return
-	if rf.state != candidate || rf.currentTerm != args.Term || rf.currentTerm > reply.Term {
-		return
-	}
-
-	// receiving server's term was higher, so step down to follower, update term and return
-	if reply.Term > rf.currentTerm {
-		rf.state = follower
-		rf.updateTerm(args.Term)
-		return
-	}
-
-	if reply.VoteGranted {
-		rf.voteCount += 1
-		if rf.voteCount == len(rf.peers)/2+1 { // only send when exactly majority votes received
-			rf.sendToChannel(rf.winElectionCh, true)
-		}
-	}
-}
-
 // AppendEntry RPC handler.
 func (rf *Raft) AppendEntry(args *RequestVoteArgs, reply *RequestVoteReply) {
 
-}
-
-func (rf *Raft) sendAppendEntry(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	rf.peers[server].Call("Raft.AppendEntry", args, reply)
-	return
 }
 
 // Start method -
@@ -277,7 +227,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // Any goroutine with a long-running loop should call killed() to check whether it should stop.
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
-	// Your code here, if desired.
 }
 
 func (rf *Raft) killed() bool {
@@ -285,8 +234,8 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-// The ticker goroutine manages the server. It is the main method which is always running and waiting for events.
-func (rf *Raft) ticker() {
+// The run goroutine manages the server. It is the main method which is always running and waiting for events.
+func (rf *Raft) run() {
 	for rf.killed() == false {
 		rf.mu.Lock()
 		state := rf.state
@@ -298,7 +247,7 @@ func (rf *Raft) ticker() {
 			case <-rf.grantVoteCh:
 			case <-rf.heartbeatCh:
 			case <-time.After(time.Duration(rf.electionTimeout) * time.Millisecond):
-				rf.becomeCandidate() // TODO
+				rf.becomeCandidate(follower) // TODO
 			}
 		case candidate:
 			select {
@@ -306,6 +255,8 @@ func (rf *Raft) ticker() {
 				// already follower
 			case <-rf.winElectionCh:
 				rf.becomeLeader() // TODO
+			case <-time.After(time.Duration(rf.electionTimeout) * time.Millisecond): // restart election
+				rf.becomeCandidate(candidate)
 			}
 		case leader:
 			select {
@@ -313,7 +264,7 @@ func (rf *Raft) ticker() {
 				// already follower
 			case <-time.After(heartbeatTimeout * time.Millisecond):
 				rf.mu.Lock()
-				rf.sendHeartbeats()
+				rf.sendEntries(true)
 				rf.mu.Unlock()
 			}
 		}
@@ -344,7 +295,7 @@ func Make(peers []*myrpc.ClientEnd, me int, persister *Persister, applyCh chan A
 	rf.matchIndex = make([]int, len(rf.peers))
 
 	rf.state = follower
-	rf.setElectionTimer()
+	rf.resetElectionTimer()
 	rf.voteCount = 0
 	rf.applyCh = applyCh
 	rf.heartbeatCh = make(chan bool)
@@ -355,8 +306,8 @@ func Make(peers []*myrpc.ClientEnd, me int, persister *Persister, applyCh chan A
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	// start ticker goroutine to start elections
-	go rf.ticker()
+	// start run goroutine to start elections
+	go rf.run()
 
 	return rf
 }
@@ -385,6 +336,38 @@ func (rf *Raft) getLastLogTerm() int {
 func (rf *Raft) updateTerm(term int) {
 	rf.currentTerm = term
 	rf.votedFor = -1
+}
+
+func (rf *Raft) becomeCandidate(fromState ServerState) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.state != fromState {
+		return
+	}
+
+	rf.state = candidate
+	rf.currentTerm += 1
+	rf.votedFor = rf.me
+	rf.voteCount = 1
+	rf.persist()
+	rf.resetElectionTimer()
+
+	rf.startElection()
+}
+
+func (rf *Raft) becomeLeader() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.state != candidate {
+		return
+	}
+
+	rf.state = leader
+	rf.resetElectionTimer()
+
+	rf.sendEntries(true)
 }
 
 func (rf *Raft) sendToChannel(ch chan bool, value bool) {
