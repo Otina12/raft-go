@@ -245,7 +245,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) applyLogs() {
-	// TODO
+	for i := rf.lastApplied; i <= rf.commitIndex; i++ {
+		rf.applyCh <- ApplyMsg{
+			CommandValid: true,
+			Command:      rf.logs[i].Command,
+			CommandIndex: i,
+		}
+		rf.lastApplied = i
+	}
 }
 
 // Start method -
@@ -314,7 +321,7 @@ func (rf *Raft) run() {
 				// already follower
 			case <-time.After(heartbeatTimeout * time.Millisecond):
 				rf.mu.Lock()
-				rf.sendEntries(true)
+				rf.broadcastAppendEntries()
 				rf.mu.Unlock()
 			}
 		}
@@ -400,7 +407,7 @@ func (rf *Raft) becomeLeader() {
 	}
 
 	rf.state = leader
-	rf.sendEntries(true)
+	rf.broadcastAppendEntries()
 }
 
 func (rf *Raft) getLastLogIndex() int {

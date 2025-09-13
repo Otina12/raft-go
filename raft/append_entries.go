@@ -18,7 +18,7 @@ type AppendEntriesReply struct {
 	Success bool
 }
 
-func (rf *Raft) sendEntries(isHeartbeat bool) {
+func (rf *Raft) broadcastAppendEntries() {
 	if rf.state != leader {
 		return
 	}
@@ -28,27 +28,31 @@ func (rf *Raft) sendEntries(isHeartbeat bool) {
 			continue
 		}
 
-		followerNextIdx := rf.nextIndex[peerIdx]
-		lastLogIdx := rf.getLastLogIndex()
-
-		if followerNextIdx > lastLogIdx && !isHeartbeat { // follower is ahead, and it is not heartbeat, so don't send
-			continue
-		}
-
-		args := &AppendEntriesArgs{
-			Term:         rf.currentTerm,
-			LeaderId:     rf.me,
-			PrevLogIndex: lastLogIdx - 1,
-			PrevLogTerm:  rf.logs[lastLogIdx-1].Term,
-			LeaderCommit: rf.commitIndex,
-		}
-
-		entries := rf.logs[lastLogIdx:]
-		args.Entries = make([]LogEntry, len(entries))
-		copy(args.Entries, entries)
-
-		go rf.sendAppendEntries(peerIdx, args, &AppendEntriesReply{})
+		rf.broadcastAppendEntryToServer(peerIdx)
 	}
+}
+
+func (rf *Raft) broadcastAppendEntryToServer(server int) {
+	followerNextIdx := rf.nextIndex[server]
+	lastLogIdx := rf.getLastLogIndex()
+
+	if followerNextIdx > lastLogIdx { // follower is ahead, so don't send
+		return
+	}
+
+	args := &AppendEntriesArgs{
+		Term:         rf.currentTerm,
+		LeaderId:     rf.me,
+		PrevLogIndex: lastLogIdx - 1,
+		PrevLogTerm:  rf.logs[lastLogIdx-1].Term,
+		LeaderCommit: rf.commitIndex,
+	}
+
+	entries := rf.logs[lastLogIdx:]
+	args.Entries = make([]LogEntry, len(entries))
+	copy(args.Entries, entries)
+
+	go rf.sendAppendEntries(server, args, &AppendEntriesReply{})
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -78,11 +82,27 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		rf.matchIndex[server] = max(rf.matchIndex[server], args.PrevLogIndex+len(args.Entries))
 		rf.nextIndex[server] = rf.matchIndex[server] + 1
 	} else {
-		args.PrevLogIndex -= 1
-		args.PrevLogTerm = rf.logs[rf.nextIndex[args.PrevLogIndex]].Term
-		entries := rf.logs[args.PrevLogIndex:]
-		args.Entries = make([]LogEntry, len(entries))
-		copy(args.Entries, entries)
-		rf.sendAppendEntries(server, args, &AppendEntriesReply{})
+		rf.nextIndex[server] -= 1
+		rf.broadcastAppendEntryToServer(server)
+	}
+
+	// if there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm:
+	// set commitIndex = N
+	for N := rf.getLastLogIndex(); N > rf.commitIndex; N-- {
+		if rf.logs[N].Term == rf.currentTerm {
+			break
+		}
+
+		count := 1
+		for i := 0; i < len(rf.peers); i++ {
+			if i != rf.me && rf.matchIndex[i] >= N {
+				count += 1
+			}
+		}
+
+		if count > len(rf.peers)/2 {
+			rf.commitIndex = N
+			break
+		}
 	}
 }
