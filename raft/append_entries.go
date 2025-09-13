@@ -23,35 +23,36 @@ func (rf *Raft) sendEntries(isHeartbeat bool) {
 		return
 	}
 
-	for peerIdx, _ := range rf.peers {
+	for peerIdx := range rf.peers {
 		if peerIdx == rf.me {
 			continue
 		}
 
 		followerNextIdx := rf.nextIndex[peerIdx]
+		lastLogIdx := rf.getLastLogIndex()
 
-		if followerNextIdx > rf.getLastLogIndex() && !isHeartbeat { // follower is ahead, and it is not heartbeat, so don't send
+		if followerNextIdx > lastLogIdx && !isHeartbeat { // follower is ahead, and it is not heartbeat, so don't send
 			continue
 		}
 
 		args := &AppendEntriesArgs{
 			Term:         rf.currentTerm,
 			LeaderId:     rf.me,
-			PrevLogIndex: followerNextIdx - 1,
-			PrevLogTerm:  rf.logs[followerNextIdx-1].Term,
+			PrevLogIndex: lastLogIdx - 1,
+			PrevLogTerm:  rf.logs[lastLogIdx-1].Term,
 			LeaderCommit: rf.commitIndex,
 		}
 
-		entries := rf.logs[followerNextIdx:]
+		entries := rf.logs[lastLogIdx:]
 		args.Entries = make([]LogEntry, len(entries))
 		copy(args.Entries, entries)
 
-		go rf.sendAppendEntry(peerIdx, args, &AppendEntriesReply{})
+		go rf.sendAppendEntries(peerIdx, args, &AppendEntriesReply{})
 	}
 }
 
-func (rf *Raft) sendAppendEntry(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	ok := rf.peers[server].Call("Raft.AppendEntry", args, reply)
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 
 	if !ok {
 		return
@@ -76,5 +77,12 @@ func (rf *Raft) sendAppendEntry(server int, args *AppendEntriesArgs, reply *Appe
 	if reply.Success {
 		rf.matchIndex[server] = max(rf.matchIndex[server], args.PrevLogIndex+len(args.Entries))
 		rf.nextIndex[server] = rf.matchIndex[server] + 1
-	} // TODO
+	} else {
+		args.PrevLogIndex -= 1
+		args.PrevLogTerm = rf.logs[rf.nextIndex[args.PrevLogIndex]].Term
+		entries := rf.logs[args.PrevLogIndex:]
+		args.Entries = make([]LogEntry, len(entries))
+		copy(args.Entries, entries)
+		rf.sendAppendEntries(server, args, &AppendEntriesReply{})
+	}
 }

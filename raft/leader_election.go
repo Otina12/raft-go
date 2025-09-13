@@ -21,7 +21,7 @@ func (rf *Raft) startElection() {
 		LastLogTerm:  rf.getLastLogTerm(),
 	}
 
-	for peerIdx, _ := range rf.peers {
+	for peerIdx := range rf.peers {
 		if peerIdx != rf.me {
 			go rf.sendRequestVote(peerIdx, args, &RequestVoteReply{})
 		}
@@ -73,6 +73,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	}
 }
 
-func (rf *Raft) resetElectionTimer() {
+func (rf *Raft) setElectionTimer() {
 	rf.electionTimeout = rand.Intn(electionTimeoutMax-electionTimeoutMin) + electionTimeoutMin
 }

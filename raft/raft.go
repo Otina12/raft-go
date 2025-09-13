@@ -193,9 +193,59 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 }
 
-// AppendEntry RPC handler.
-func (rf *Raft) AppendEntry(args *RequestVoteArgs, reply *RequestVoteReply) {
+// AppendEntries RPC handler.
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	defer rf.persist()
 
+	rf.sendToChannel(rf.heartbeatCh, true)
+
+	reply = &AppendEntriesReply{
+		Term:    rf.currentTerm,
+		Success: false,
+	}
+
+	if args.Term > rf.currentTerm {
+		rf.state = follower
+		rf.updateTerm(args.Term)
+	}
+
+	if rf.state == candidate {
+		rf.state = follower
+	}
+
+	if rf.currentTerm > args.Term {
+		return
+	}
+
+	// leader's log is longer than follower's log
+	if args.PrevLogIndex > rf.getLastLogIndex() {
+		return
+	}
+
+	// existing entry conflicts with new one (same index but different terms)
+	if args.PrevLogTerm != rf.logs[args.PrevLogIndex].Term {
+		return
+	}
+
+	// at this point, we have found the matching index
+
+	// many retries (log index decrements) could have happened, to the point where args.PrevLogIndex < rf.getLastLogIndex(),
+	// so we first truncate follower's log, and only then append entries
+	rf.logs = rf.logs[:args.PrevLogIndex+1]
+	rf.logs = append(rf.logs, args.Entries...)
+
+	reply.Success = true
+
+	if args.LeaderCommit > rf.commitIndex {
+		rf.commitIndex = min(args.LeaderCommit, rf.getLastLogIndex())
+		go rf.applyLogs()
+	}
+}
+
+func (rf *Raft) applyLogs() {
+	// TODO
 }
 
 // Start method -
@@ -247,7 +297,7 @@ func (rf *Raft) run() {
 			case <-rf.grantVoteCh:
 			case <-rf.heartbeatCh:
 			case <-time.After(time.Duration(rf.electionTimeout) * time.Millisecond):
-				rf.becomeCandidate(follower) // TODO
+				rf.becomeCandidate(follower)
 			}
 		case candidate:
 			select {
@@ -295,7 +345,7 @@ func Make(peers []*myrpc.ClientEnd, me int, persister *Persister, applyCh chan A
 	rf.matchIndex = make([]int, len(rf.peers))
 
 	rf.state = follower
-	rf.resetElectionTimer()
+	rf.setElectionTimer()
 	rf.voteCount = 0
 	rf.applyCh = applyCh
 	rf.heartbeatCh = make(chan bool)
@@ -325,19 +375,6 @@ func (rf *Raft) isCandidateUpToDate(candidateLastLogIndex int, candidateLastLogT
 	return candidateLastLogIndex >= myLastLogIndex
 }
 
-func (rf *Raft) getLastLogIndex() int {
-	return len(rf.logs) - 1
-}
-
-func (rf *Raft) getLastLogTerm() int {
-	return rf.logs[rf.getLastLogIndex()].Term
-}
-
-func (rf *Raft) updateTerm(term int) {
-	rf.currentTerm = term
-	rf.votedFor = -1
-}
-
 func (rf *Raft) becomeCandidate(fromState ServerState) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -351,8 +388,6 @@ func (rf *Raft) becomeCandidate(fromState ServerState) {
 	rf.votedFor = rf.me
 	rf.voteCount = 1
 	rf.persist()
-	rf.resetElectionTimer()
-
 	rf.startElection()
 }
 
@@ -365,9 +400,20 @@ func (rf *Raft) becomeLeader() {
 	}
 
 	rf.state = leader
-	rf.resetElectionTimer()
-
 	rf.sendEntries(true)
+}
+
+func (rf *Raft) getLastLogIndex() int {
+	return len(rf.logs) - 1
+}
+
+func (rf *Raft) getLastLogTerm() int {
+	return rf.logs[rf.getLastLogIndex()].Term
+}
+
+func (rf *Raft) updateTerm(term int) {
+	rf.currentTerm = term
+	rf.votedFor = -1
 }
 
 func (rf *Raft) sendToChannel(ch chan bool, value bool) {
