@@ -416,6 +416,30 @@ type Service struct {
 	methods map[string]reflect.Method
 }
 
+func MakeService(rcvr interface{}) *Service {
+	svc := &Service{}
+	svc.typ = reflect.TypeOf(rcvr)
+	svc.rcvr = reflect.ValueOf(rcvr)
+	svc.name = reflect.Indirect(svc.rcvr).Type().Name()
+	svc.methods = map[string]reflect.Method{}
+
+	for m := 0; m < svc.typ.NumMethod(); m++ {
+		method := svc.typ.Method(m)
+		mtype := method.Type
+		mname := method.Name
+
+		if method.PkgPath != "" ||
+			mtype.NumIn() != 3 ||
+			mtype.In(2).Kind() != reflect.Ptr ||
+			mtype.NumOut() != 0 {
+		} else {
+			svc.methods[mname] = method
+		}
+	}
+
+	return svc
+}
+
 func (svc *Service) dispatch(methname string, req reqMsg) replyMsg {
 	if method, ok := svc.methods[methname]; ok {
 		args := reflect.New(req.argsType)

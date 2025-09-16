@@ -266,13 +266,18 @@ func (rf *Raft) applyLogs() {
 // The second return value is the current term.
 // The third return value is true if this server believes it is the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-	// Your code here (2B).
+	if rf.state != leader {
+		return -1, rf.currentTerm, false
+	}
 
-	return index, term, isLeader
+	term := rf.currentTerm
+	rf.logs = append(rf.logs, LogEntry{Term: term, Command: command})
+	rf.persist()
+
+	return rf.getLastLogIndex(), term, true
 }
 
 // Kill method -
@@ -311,7 +316,7 @@ func (rf *Raft) run() {
 			case <-rf.stepDownCh:
 				// already follower
 			case <-rf.winElectionCh:
-				rf.becomeLeader() // TODO
+				rf.becomeLeader()
 			case <-time.After(time.Duration(rf.electionTimeout) * time.Millisecond): // restart election
 				rf.becomeCandidate(candidate)
 			}
@@ -363,7 +368,7 @@ func Make(peers []*myrpc.ClientEnd, me int, persister *Persister, applyCh chan A
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	// start run goroutine to start elections
+	// start run goroutine to start election
 	go rf.run()
 
 	return rf
