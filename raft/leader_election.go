@@ -5,8 +5,8 @@ import (
 )
 
 const (
-	electionTimeoutMin = 250
-	electionTimeoutMax = 400
+	electionTimeoutMin = 1200
+	electionTimeoutMax = 2000
 )
 
 func (rf *Raft) startElection() {

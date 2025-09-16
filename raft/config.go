@@ -486,7 +486,8 @@ func (cfg *config) end() {
 		ncmds := cfg.maxIndex - cfg.maxIndex0   // number of Raft agreements reported
 		cfg.mu.Unlock()
 
-		fmt.Printf("  ... Passed --")
-		fmt.Printf("  %4.1f  %d %4d %7d %4d\n", t, npeers, nrpc, nbytes, ncmds)
+		fmt.Println("\n... ✅Passed ...")
+		fmt.Printf("t=%.1f  peers=%d  rpcs=%d  bytes=%d  cmds=%d\n",
+			t, npeers, nrpc, nbytes, ncmds)
 	}
 }

@@ -28,7 +28,7 @@ func (rf *Raft) broadcastAppendEntries() {
 			continue
 		}
 
-		rf.broadcastAppendEntryToServer(peerIdx)
+		go rf.broadcastAppendEntryToServer(peerIdx)
 	}
 }
 
@@ -43,8 +43,8 @@ func (rf *Raft) broadcastAppendEntryToServer(server int) {
 	args := &AppendEntriesArgs{
 		Term:         rf.currentTerm,
 		LeaderId:     rf.me,
-		PrevLogIndex: lastLogIdx - 1,
-		PrevLogTerm:  rf.logs[lastLogIdx-1].Term,
+		PrevLogIndex: followerNextIdx - 1,
+		PrevLogTerm:  rf.logs[followerNextIdx-1].Term,
 		LeaderCommit: rf.commitIndex,
 	}
 
@@ -52,7 +52,7 @@ func (rf *Raft) broadcastAppendEntryToServer(server int) {
 	args.Entries = make([]LogEntry, len(entries))
 	copy(args.Entries, entries)
 
-	go rf.sendAppendEntries(server, args, &AppendEntriesReply{})
+	rf.sendAppendEntries(server, args, &AppendEntriesReply{})
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {

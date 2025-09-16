@@ -52,7 +52,7 @@ const (
 )
 
 const (
-	heartbeatTimeout = 50
+	heartbeatTimeout = 500
 )
 
 // Raft struct -
@@ -365,6 +365,8 @@ func Make(peers []*myrpc.ClientEnd, me int, persister *Persister, applyCh chan A
 	rf.winElectionCh = make(chan bool)
 	rf.stepDownCh = make(chan bool)
 
+	rf.logs = append(rf.logs, LogEntry{Term: 0}) // dummy log
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
@@ -412,6 +414,14 @@ func (rf *Raft) becomeLeader() {
 	}
 
 	rf.state = leader
+	rf.nextIndex = make([]int, len(rf.peers))
+	rf.matchIndex = make([]int, len(rf.peers))
+
+	lastIndex := rf.getLastLogIndex() + 1
+	for i := range rf.peers {
+		rf.nextIndex[i] = lastIndex
+	}
+
 	rf.broadcastAppendEntries()
 }
 
