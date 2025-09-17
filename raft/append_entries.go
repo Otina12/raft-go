@@ -34,11 +34,6 @@ func (rf *Raft) broadcastAppendEntries() {
 
 func (rf *Raft) broadcastAppendEntryToServer(server int) {
 	followerNextIdx := rf.nextIndex[server]
-	lastLogIdx := rf.getLastLogIndex()
-
-	if followerNextIdx > lastLogIdx { // follower is ahead, so don't send
-		return
-	}
 
 	args := &AppendEntriesArgs{
 		Term:         rf.currentTerm,
@@ -48,7 +43,7 @@ func (rf *Raft) broadcastAppendEntryToServer(server int) {
 		LeaderCommit: rf.commitIndex,
 	}
 
-	entries := rf.logs[lastLogIdx:]
+	entries := rf.logs[followerNextIdx:]
 	args.Entries = make([]LogEntry, len(entries))
 	copy(args.Entries, entries)
 
@@ -63,8 +58,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	}
 
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	defer rf.persist()
+
+	doRetry := false
 
 	// if server is no longer a leader or term has already changed, return
 	if rf.state != leader || rf.currentTerm != args.Term || rf.currentTerm > reply.Term {
@@ -82,14 +77,16 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		rf.matchIndex[server] = max(rf.matchIndex[server], args.PrevLogIndex+len(args.Entries))
 		rf.nextIndex[server] = rf.matchIndex[server] + 1
 	} else {
-		rf.nextIndex[server] -= 1
-		rf.broadcastAppendEntryToServer(server)
+		if rf.nextIndex[server] > 1 {
+			rf.nextIndex[server] -= 1
+		}
+		doRetry = true
 	}
 
 	// if there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm:
 	// set commitIndex = N
 	for N := rf.getLastLogIndex(); N > rf.commitIndex; N-- {
-		if rf.logs[N].Term == rf.currentTerm {
+		if rf.logs[N].Term != rf.currentTerm {
 			break
 		}
 
@@ -102,7 +99,14 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 		if count > len(rf.peers)/2 {
 			rf.commitIndex = N
+			go rf.applyLogs()
 			break
 		}
+	}
+
+	rf.persist()
+	rf.mu.Unlock()
+	if doRetry {
+		rf.broadcastAppendEntryToServer(server)
 	}
 }
