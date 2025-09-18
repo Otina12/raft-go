@@ -52,7 +52,7 @@ const (
 )
 
 const (
-	heartbeatTimeout = 500
+	heartbeatTimeout = 120
 )
 
 // Raft struct -
@@ -201,10 +201,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.sendToChannel(rf.heartbeatCh, true)
 
-	reply = &AppendEntriesReply{
-		Term:    rf.currentTerm,
-		Success: false,
-	}
+	reply.Term = rf.currentTerm
+	reply.Success = false
 
 	if args.Term > rf.currentTerm {
 		rf.state = follower
@@ -417,9 +415,9 @@ func (rf *Raft) becomeLeader() {
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
 
-	lastIndex := rf.getLastLogIndex() + 1
+	lastIndex := rf.getLastLogIndex()
 	for i := range rf.peers {
-		rf.nextIndex[i] = lastIndex
+		rf.nextIndex[i] = lastIndex + 1
 	}
 
 	rf.broadcastAppendEntries()
