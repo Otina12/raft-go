@@ -5,8 +5,8 @@ import (
 )
 
 const (
-	electionTimeoutMin = 1200
-	electionTimeoutMax = 2000
+	electionTimeoutMin = 350
+	electionTimeoutMax = 500
 )
 
 func (rf *Raft) startElection() {
@@ -61,7 +61,9 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	// receiving server's term was higher, so step down to follower, update term and return
 	if reply.Term > rf.currentTerm {
 		rf.state = follower
-		rf.updateTerm(args.Term)
+		rf.updateTerm(reply.Term)
+		rf.setElectionTimer()
+		rf.sendToChannel(rf.stepDownCh, true)
 		return
 	}
 

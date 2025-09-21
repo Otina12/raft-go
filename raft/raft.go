@@ -31,7 +31,6 @@ type ApplyMsg struct {
 	Command      interface{}
 	CommandIndex int
 
-	// For 2D:
 	SnapshotValid bool
 	Snapshot      []byte
 	SnapshotTerm  int
@@ -52,7 +51,7 @@ const (
 )
 
 const (
-	heartbeatTimeout = 500
+	heartbeatTimeout = 120
 )
 
 // Raft struct -
@@ -129,25 +128,6 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 }
 
-// CondInstallSnapshot method -
-// A service wants to switch to snapshot.
-// Only do so if Raft hasn't had more recent info since it communicate the snapshot on applyCh.
-func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
-
-	// Your code here (2D).
-
-	return true
-}
-
-// Snapshot method -
-// The service says it has created a snapshot that has all info up to and including index.
-// This means the service no longer needs the log through (and including) that index.
-// Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (2D).
-
-}
-
 // RequestVoteArgs struct -
 // RequestVote RPC arguments structure.
 type RequestVoteArgs struct {
@@ -182,13 +162,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term > rf.currentTerm {
 		rf.state = follower
 		rf.updateTerm(args.Term)
+		rf.setElectionTimer()
+		rf.sendToChannel(rf.stepDownCh, true)
 	}
 
-	reply.Term = args.Term
+	reply.Term = rf.currentTerm
 
 	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && rf.isCandidateUpToDate(args.LastLogIndex, args.LastLogTerm) {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
+		rf.setElectionTimer()
 		rf.sendToChannel(rf.grantVoteCh, true)
 	}
 }
@@ -199,43 +182,34 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 	defer rf.persist()
 
-	rf.sendToChannel(rf.heartbeatCh, true)
+	reply.Term = rf.currentTerm
+	reply.Success = false
 
-	reply = &AppendEntriesReply{
-		Term:    rf.currentTerm,
-		Success: false,
+	if args.Term < rf.currentTerm {
+		return
 	}
 
 	if args.Term > rf.currentTerm {
 		rf.state = follower
 		rf.updateTerm(args.Term)
+		rf.setElectionTimer()
+		rf.sendToChannel(rf.stepDownCh, true)
 	}
 
-	if rf.state == candidate {
-		rf.state = follower
-	}
-
-	if rf.currentTerm > args.Term {
-		return
-	}
-
-	// leader's log is longer than follower's log
 	if args.PrevLogIndex > rf.getLastLogIndex() {
 		return
 	}
 
-	// existing entry conflicts with new one (same index but different terms)
-	if args.PrevLogTerm != rf.logs[args.PrevLogIndex].Term {
+	if rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
 		return
 	}
 
-	// at this point, we have found the matching index
+	rf.sendToChannel(rf.heartbeatCh, true)
 
-	// many retries (log index decrements) could have happened, to the point where args.PrevLogIndex < rf.getLastLogIndex(),
-	// so we first truncate follower's log, and only then append entries
-	rf.logs = rf.logs[:args.PrevLogIndex+1]
-	rf.logs = append(rf.logs, args.Entries...)
-
+	if len(args.Entries) > 0 {
+		rf.logs = rf.logs[:args.PrevLogIndex+1]
+		rf.logs = append(rf.logs, args.Entries...)
+	}
 	reply.Success = true
 
 	if args.LeaderCommit > rf.commitIndex {
@@ -245,7 +219,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) applyLogs() {
-	for i := rf.lastApplied; i <= rf.commitIndex; i++ {
+	for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 		rf.applyCh <- ApplyMsg{
 			CommandValid: true,
 			Command:      rf.logs[i].Command,
@@ -276,6 +250,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term := rf.currentTerm
 	rf.logs = append(rf.logs, LogEntry{Term: term, Command: command})
 	rf.persist()
+
+	go rf.broadcastAppendEntries()
 
 	return rf.getLastLogIndex(), term, true
 }
@@ -402,6 +378,8 @@ func (rf *Raft) becomeCandidate(fromState ServerState) {
 	rf.votedFor = rf.me
 	rf.voteCount = 1
 	rf.persist()
+
+	rf.setElectionTimer()
 	rf.startElection()
 }
 
@@ -417,10 +395,11 @@ func (rf *Raft) becomeLeader() {
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
 
-	lastIndex := rf.getLastLogIndex() + 1
+	lastIndex := rf.getLastLogIndex()
 	for i := range rf.peers {
-		rf.nextIndex[i] = lastIndex
+		rf.nextIndex[i] = lastIndex + 1
 	}
+	rf.matchIndex[rf.me] = lastIndex
 
 	rf.broadcastAppendEntries()
 }
@@ -436,6 +415,7 @@ func (rf *Raft) getLastLogTerm() int {
 func (rf *Raft) updateTerm(term int) {
 	rf.currentTerm = term
 	rf.votedFor = -1
+	rf.persist()
 }
 
 func (rf *Raft) sendToChannel(ch chan bool, value bool) {
