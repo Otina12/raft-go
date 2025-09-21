@@ -33,7 +33,17 @@ func (rf *Raft) broadcastAppendEntries() {
 }
 
 func (rf *Raft) broadcastAppendEntryToServer(server int) {
+	rf.mu.Lock()
+
+	if rf.state != leader {
+		rf.mu.Unlock()
+		return
+	}
+
 	followerNextIdx := rf.nextIndex[server]
+	if followerNextIdx < 1 {
+		followerNextIdx = 1
+	}
 
 	args := &AppendEntriesArgs{
 		Term:         rf.currentTerm,
@@ -43,9 +53,11 @@ func (rf *Raft) broadcastAppendEntryToServer(server int) {
 		LeaderCommit: rf.commitIndex,
 	}
 
-	entries := rf.logs[followerNextIdx:]
-	args.Entries = make([]LogEntry, len(entries))
-	copy(args.Entries, entries)
+	entries := make([]LogEntry, len(rf.logs[followerNextIdx:]))
+	copy(entries, rf.logs[followerNextIdx:])
+	args.Entries = entries
+
+	rf.mu.Unlock()
 
 	rf.sendAppendEntries(server, args, &AppendEntriesReply{})
 }
@@ -71,6 +83,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	if reply.Term > rf.currentTerm {
 		rf.state = follower
 		rf.updateTerm(reply.Term)
+		rf.setElectionTimer()
+		rf.sendToChannel(rf.stepDownCh, true)
 		rf.mu.Unlock()
 		return
 	}
@@ -89,7 +103,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	// set commitIndex = N
 	for N := rf.getLastLogIndex(); N > rf.commitIndex; N-- {
 		if rf.logs[N].Term != rf.currentTerm {
-			break
+			continue
 		}
 
 		count := 1

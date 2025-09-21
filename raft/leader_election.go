@@ -62,6 +62,8 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	if reply.Term > rf.currentTerm {
 		rf.state = follower
 		rf.updateTerm(reply.Term)
+		rf.setElectionTimer()
+		rf.sendToChannel(rf.stepDownCh, true)
 		return
 	}
 
