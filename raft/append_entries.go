@@ -63,13 +63,15 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 	// if server is no longer a leader or term has already changed, return
 	if rf.state != leader || rf.currentTerm != args.Term || rf.currentTerm > reply.Term {
+		rf.mu.Unlock()
 		return
 	}
 
 	// receiving server's term was higher, so step down to follower, update term and return
 	if reply.Term > rf.currentTerm {
 		rf.state = follower
-		rf.updateTerm(args.Term)
+		rf.updateTerm(reply.Term)
+		rf.mu.Unlock()
 		return
 	}
 
@@ -106,6 +108,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 	rf.persist()
 	rf.mu.Unlock()
+
 	if doRetry {
 		rf.broadcastAppendEntryToServer(server)
 	}

@@ -199,8 +199,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 	defer rf.persist()
 
-	rf.sendToChannel(rf.heartbeatCh, true)
-
 	reply.Term = rf.currentTerm
 	reply.Success = false
 
@@ -208,6 +206,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.state = follower
 		rf.updateTerm(args.Term)
 	}
+
+	rf.sendToChannel(rf.heartbeatCh, true)
 
 	if rf.state == candidate {
 		rf.state = follower
@@ -229,10 +229,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// at this point, we have found the matching index
 
-	// many retries (log index decrements) could have happened, to the point where args.PrevLogIndex < rf.getLastLogIndex(),
-	// so we first truncate follower's log, and only then append entries
-	rf.logs = rf.logs[:args.PrevLogIndex+1]
-	rf.logs = append(rf.logs, args.Entries...)
+	if len(args.Entries) > 0 {
+		// many retries (log index decrements) could have happened, to the point where args.PrevLogIndex < rf.getLastLogIndex(),
+		// so we first truncate follower's log, and only then append entries
+		rf.logs = rf.logs[:args.PrevLogIndex+1]
+		rf.logs = append(rf.logs, args.Entries...)
+	}
 
 	reply.Success = true
 
@@ -243,7 +245,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) applyLogs() {
-	for i := rf.lastApplied; i <= rf.commitIndex; i++ {
+	for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 		rf.applyCh <- ApplyMsg{
 			CommandValid: true,
 			Command:      rf.logs[i].Command,
